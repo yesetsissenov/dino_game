@@ -185,10 +185,11 @@ const sound = {
 };
 
 /* ---------- пиксель-арт спрайты ---------- */
-/* 'X' — тело, 'o' — глаз (цвет фона) */
-const DINO_BODY = [
+/* 'X' — тело; colorize() раскладывает на тона:
+   1 основной, 2 тёмный (спина), 3 светлый (живот), o белок глаза, p зрачок */
+const DINO_BODY_RAW = [
   ".............XXXXXXX",
-  ".............XoXXXXX",
+  ".............XopXXXX",
   ".............XXXXXXX",
   ".............XXXXXXX",
   ".............XXXX...",
@@ -221,10 +222,10 @@ const LEGS_STAND = [
   ".......XX...XX......",
   ".......XXX..XXX.....",
 ];
-const DINO_DUCK = [
+const DINO_DUCK_RAW = [
   [
     "...................XXXXXXX",
-    "XX.................XoXXXXX",
+    "XX.................XopXXXX",
     "XXX......XXXXXXXXXXXXXXXXX",
     ".XXXXXXXXXXXXXXXXXXXXXX...",
     "..XXXXXXXXXXXXXXXXXXX.....",
@@ -234,7 +235,7 @@ const DINO_DUCK = [
   ],
   [
     "...................XXXXXXX",
-    "XX.................XoXXXXX",
+    "XX.................XopXXXX",
     "XXX......XXXXXXXXXXXXXXXXX",
     ".XXXXXXXXXXXXXXXXXXXXXX...",
     "..XXXXXXXXXXXXXXXXXXX.....",
@@ -243,37 +244,73 @@ const DINO_DUCK = [
     ".............XXX..........",
   ],
 ];
-const PTERO = [
+/* птеродактиль летит влево: клюв 4, тёмное крыло 2 */
+const PTERO_FRAMES = [
   [
-    "......X.........",
-    "......XX........",
-    "......XXX.......",
-    "XXXXXXXXXXXXX...",
-    "...XXXXXXXXXXXXX",
-    "....XXXXXXXX....",
-    "................",
-    "................",
+    "..........222.....",
+    "..........2222....",
+    "..........22222...",
+    "....111111122.....",
+    "4411p111111111111.",
+    ".411111111111111..",
+    "...111111111......",
+    "..................",
+    "..................",
   ],
   [
-    "................",
-    "................",
-    "................",
-    "XXXXXXXXXXXXX...",
-    "...XXXXXXXXXXXXX",
-    "....XXXXXXXX....",
-    "......XXX.......",
-    "......XX........",
+    "..................",
+    "..................",
+    "..................",
+    "....111111........",
+    "4411p111111111111.",
+    ".411111111111111..",
+    "...11111112222....",
+    "..........2222....",
+    "..........222.....",
   ],
 ];
 
+/* авто-раскраска силуэта: верх колонок темнее (спина), зона живота светлее */
+function colorize(raw, belly, dark = true) {
+  const rows = raw.map((r) => r.split(""));
+  const width = Math.max(...raw.map((r) => r.length));
+  if (dark) {
+    for (let c = 0; c < width; c++) {
+      let cnt = 0;
+      for (let r = 0; r < rows.length && cnt < 1; r++) {
+        const ch = rows[r][c];
+        if (ch === "X") { rows[r][c] = "2"; cnt++; }
+        else if (ch === "o" || ch === "p") break;
+      }
+    }
+  }
+  if (belly) {
+    const [r1, r2, c1, c2] = belly;
+    for (let r = r1; r <= r2; r++)
+      for (let c = c1; c <= c2; c++)
+        if (rows[r] && rows[r][c] === "X") rows[r][c] = "3";
+  }
+  return rows.map((r) => r.join("").replace(/X/g, "1"));
+}
+const DINO_BODY = colorize(DINO_BODY_RAW, [12, 16, 8, 15]);
+const DINO_DUCK = DINO_DUCK_RAW.map((m) => colorize(m, [3, 5, 6, 18]));
+const LEGS = {
+  runA: colorize(LEGS_RUN_A, null, false),
+  runB: colorize(LEGS_RUN_B, null, false),
+  stand: colorize(LEGS_STAND, null, false),
+};
+
+const PAL_DINO = { 1: "#609552", 2: "#476f3c", 3: "#9dc17c", o: "#ffffff", p: "#222222" };
+const PAL_PTERO = { 1: "#927460", 2: "#685042", 4: "#d4a048", p: "#222222" };
+
 const PX = 2.4; // масштаб пикселя спрайта
-function drawSprite(map, x, y, fg, bg, scale = PX) {
+function drawSprite(map, x, y, pal, scale = PX) {
   for (let r = 0; r < map.length; r++) {
     const row = map[r];
     for (let c = 0; c < row.length; c++) {
-      const ch = row[c];
-      if (ch === ".") continue;
-      ctx.fillStyle = ch === "o" ? bg : fg;
+      const col = pal[row[c]];
+      if (!col) continue;
+      ctx.fillStyle = col;
       ctx.fillRect(Math.round(x + c * scale), Math.round(y + r * scale), Math.ceil(scale), Math.ceil(scale));
     }
   }
@@ -329,16 +366,16 @@ const dino = {
       return { x: this.x + 6, y: this.y - this.h + 4, w: this.w - 14, h: this.h - 6 };
     return { x: this.x + 8, y: this.y - this.h + 6, w: this.w - 18, h: this.h - 10 };
   },
-  draw(fg, bg) {
-    const x = this.x, hb = this.h;
+  draw() {
+    const x = this.x;
     if (this.ducking && !this.jumping) {
-      drawSprite(DINO_DUCK[this.frame], x, this.y - 8 * PX, fg, bg);
+      drawSprite(DINO_DUCK[this.frame], x, this.y - 8 * PX, PAL_DINO);
       return;
     }
-    const legs = this.jumping ? LEGS_STAND
-      : (G.state === "run" ? (this.frame ? LEGS_RUN_A : LEGS_RUN_B) : LEGS_STAND);
-    drawSprite(DINO_BODY, x, this.y - 21 * PX, fg, bg);
-    drawSprite(legs, x, this.y - 3 * PX, fg, bg);
+    const legs = this.jumping ? LEGS.stand
+      : (G.state === "run" ? (this.frame ? LEGS.runA : LEGS.runB) : LEGS.stand);
+    drawSprite(DINO_BODY, x, this.y - 21 * PX, PAL_DINO);
+    drawSprite(legs, x, this.y - 3 * PX, PAL_DINO);
   },
 };
 
@@ -362,29 +399,56 @@ function spawnObstacle() {
     const count = s.h < 45 ? 1 + Math.floor(Math.random() * 3) : 1 + Math.floor(Math.random() * 2);
     let ox = W + 20;
     for (let i = 0; i < count; i++) {
-      obstacles.push({ kind: "cactus", x: ox, y: GROUND, w: s.w, h: s.h + (Math.random() * 8 | 0) });
+      obstacles.push({ kind: "cactus", x: ox, y: GROUND, w: s.w, h: s.h + (Math.random() * 8 | 0), flower: Math.random() < 0.25 });
       ox += s.w + 4;
     }
   }
 }
 
-function drawCactus(o, fg) {
-  const x = Math.round(o.x), top = Math.round(o.y - o.h);
-  const w = o.w, h = o.h;
-  const stem = Math.max(8, w * 0.44);
-  const sx = x + (w - stem) / 2;
-  ctx.fillStyle = fg;
-  r(sx, top, stem, h);
-  // руки
-  const armW = Math.max(5, w * 0.28), armH = h * 0.32;
-  r(sx - armW, top + h * 0.28, armW, 4);
-  r(sx - armW, top + h * 0.28 - armH * 0.6, 4, armH * 0.6 + 4);
-  r(sx + stem, top + h * 0.18, armW, 4);
-  r(sx + stem + armW - 4, top + h * 0.18 - armH * 0.5, 4, armH * 0.5 + 4);
-  function r(a, b, c, d) { ctx.fillRect(Math.round(a), Math.round(b), Math.round(c), Math.round(d)); }
+const CACTUS = { main: "#4e8f45", light: "#79b061", dark: "#3a7136", spine: "rgba(255,255,255,.55)", flower: "#e57fa0" };
+
+function drawCactus(o) {
+  const x = Math.round(o.x), top = Math.round(o.y - o.h), w = o.w, h = o.h;
+  const stem = Math.max(8, Math.round(w * 0.44));
+  const sx = x + ((w - stem) / 2 | 0);
+  const armW = Math.max(5, Math.round(w * 0.3)), armH = Math.round(h * 0.3);
+  // ствол с подсветкой слева и тенью справа
+  ctx.fillStyle = CACTUS.main;
+  ctx.fillRect(sx, top, stem, h);
+  ctx.fillRect(sx + 1, top - 2, stem - 2, 2);
+  ctx.fillStyle = CACTUS.light;
+  ctx.fillRect(sx + 1, top, 2, h - 1);
+  ctx.fillStyle = CACTUS.dark;
+  ctx.fillRect(sx + stem - 2, top, 2, h - 1);
+  // руки: горизонтальное плечо + вертикальный отросток
+  arm(sx - armW, top + Math.round(h * 0.34), true);
+  arm(sx + stem, top + Math.round(h * 0.2), false);
+  function arm(ax, ay, left) {
+    ctx.fillStyle = CACTUS.main;
+    ctx.fillRect(ax, ay, armW + 1, 5);
+    const vx = left ? ax : ax + armW - 4;
+    ctx.fillRect(vx, ay - armH, 5, armH + 5);
+    ctx.fillStyle = left ? CACTUS.light : CACTUS.dark;
+    ctx.fillRect(vx + (left ? 1 : 3), ay - armH + 1, 1, armH);
+  }
+  // колючки и иногда цветок
+  ctx.fillStyle = CACTUS.spine;
+  for (let yy = top + 3; yy < top + h - 3; yy += 6) {
+    ctx.fillRect(sx - 1, yy, 1, 2);
+    ctx.fillRect(sx + stem, yy + 3, 1, 2);
+  }
+  if (o.flower) {
+    ctx.fillStyle = CACTUS.flower;
+    ctx.fillRect(sx + (stem >> 1) - 1, top - 5, 4, 3);
+  }
 }
 
-function updateObstacles(dt, fg, bg) {
+function drawObstacle(o) {
+  if (o.kind === "cactus") drawCactus(o);
+  else drawSprite(PTERO_FRAMES[o.frame], o.x, o.y - 9 * PX + 3, PAL_PTERO);
+}
+
+function updateObstacles(dt) {
   nextGap -= G.speed * dt;
   if (nextGap <= 0) {
     spawnObstacle();
@@ -401,10 +465,7 @@ function updateObstacles(dt, fg, bg) {
     }
   }
   while (obstacles.length && obstacles[0].x + obstacles[0].w * 2 < 0) obstacles.shift();
-  for (const o of obstacles) {
-    if (o.kind === "cactus") drawCactus(o, fg);
-    else drawSprite(PTERO[o.frame], o.x, o.y - 8 * PX, fg, bg);
-  }
+  for (const o of obstacles) drawObstacle(o);
 }
 
 function collides() {
@@ -418,56 +479,89 @@ function collides() {
   return false;
 }
 
-/* ---------- фон: земля, облака, звёзды, луна ---------- */
+/* ---------- фон: небо, барханы, песок, облака, звёзды ---------- */
 let groundOffset = 0;
 const bumps = Array.from({ length: 40 }, () => ({ x: Math.random() * W, w: 6 + Math.random() * 20 }));
 const clouds = Array.from({ length: 4 }, (_, i) => ({ x: Math.random() * W, y: 40 + Math.random() * 90, s: 0.55 + Math.random() * 0.5 }));
 const stars = Array.from({ length: 26 }, () => ({ x: Math.random() * W, y: 10 + Math.random() * 140, r: Math.random() < 0.3 ? 2 : 1 }));
+const HILL_SPAN = W + 300;
+const hillsFar = Array.from({ length: 7 }, (_, i) => ({ x: i * 170 + Math.random() * 80, w: 150 + Math.random() * 130, h: 14 + Math.random() * 18 }));
+const hillsNear = Array.from({ length: 5 }, (_, i) => ({ x: i * 240 + Math.random() * 100, w: 190 + Math.random() * 140, h: 8 + Math.random() * 10 }));
+let farOff = 0, nearOff = 0;
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 function mix(c1, c2, t) {
   return `rgb(${Math.round(lerp(c1[0], c2[0], t))},${Math.round(lerp(c1[1], c2[1], t))},${Math.round(lerp(c1[2], c2[2], t))})`;
 }
-const DAY_BG = [247, 247, 247], NIGHT_BG = [27, 30, 41];
-const DAY_FG = [83, 83, 83], NIGHT_FG = [235, 235, 240];
+const SKY_DAY_TOP = [154, 206, 235], SKY_NIGHT_TOP = [13, 17, 38];
+const SKY_DAY_BOT = [233, 244, 248], SKY_NIGHT_BOT = [42, 50, 86];
+const DAY_FG = [90, 84, 70], NIGHT_FG = [235, 235, 240];
 
-function drawBackground(dt, fg, bg) {
-  const n = G.nightAmount;
-  // звёзды и луна
-  if (n > 0.02) {
-    ctx.globalAlpha = n;
-    ctx.fillStyle = "#e8e8f0";
-    for (const s of stars) ctx.fillRect(s.x, s.y, s.r, s.r);
-    // луна-серп
-    ctx.beginPath(); ctx.arc(W - 130, 60, 22, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = mix(DAY_BG, NIGHT_BG, n);
-    ctx.beginPath(); ctx.arc(W - 122, 54, 20, 0, Math.PI * 2); ctx.fill();
+function drawSky(n) {
+  const g = ctx.createLinearGradient(0, 0, 0, GROUND + 2);
+  g.addColorStop(0, mix(SKY_DAY_TOP, SKY_NIGHT_TOP, n));
+  g.addColorStop(1, mix(SKY_DAY_BOT, SKY_NIGHT_BOT, n));
+  ctx.fillStyle = g;
+  ctx.fillRect(-10, -10, W + 20, GROUND + 14);
+  if (n < 0.97) { // солнце
+    ctx.globalAlpha = 1 - n;
+    ctx.fillStyle = "rgba(255,236,160,.35)";
+    ctx.beginPath(); ctx.arc(W - 130, 62, 30, 0, 7); ctx.fill();
+    ctx.fillStyle = "rgba(255,232,140,.95)";
+    ctx.beginPath(); ctx.arc(W - 130, 62, 20, 0, 7); ctx.fill();
     ctx.globalAlpha = 1;
   }
+}
+
+function drawScenery(dt) {
   // облака
-  ctx.fillStyle = fg;
-  ctx.globalAlpha = 0.28;
+  ctx.fillStyle = "rgba(255,255,255,.85)";
   for (const c of clouds) {
     if (G.state === "run") c.x -= G.speed * 0.25 * c.s * dt;
     if (c.x < -80) { c.x = W + 60; c.y = 40 + Math.random() * 90; }
-    cloud(c.x, c.y, c.s);
+    ctx.fillRect(c.x, c.y, 52 * c.s, 8);
+    ctx.fillRect(c.x + 10 * c.s, c.y - 6, 26 * c.s, 6);
   }
-  ctx.globalAlpha = 1;
-  // земля
-  ctx.strokeStyle = fg;
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(0, GROUND + 2); ctx.lineTo(W, GROUND + 2); ctx.stroke();
+  // барханы (параллакс)
+  if (G.state === "run") {
+    farOff = (farOff + G.speed * 0.12 * dt) % HILL_SPAN;
+    nearOff = (nearOff + G.speed * 0.28 * dt) % HILL_SPAN;
+  }
+  hills(hillsFar, farOff, "#d3c5a2");
+  hills(hillsNear, nearOff, "#c4b088");
+  // песок
+  ctx.fillStyle = "#dcc9a0";
+  ctx.fillRect(-10, GROUND + 2, W + 20, H - GROUND + 10);
+  ctx.fillStyle = "#a99676";
+  ctx.fillRect(-10, GROUND + 2, W + 20, 2);
   if (G.state === "run") groundOffset = (groundOffset + G.speed * dt) % W;
-  ctx.fillStyle = fg;
   for (const b of bumps) {
     let x = b.x - groundOffset;
     if (x < -30) x += W;
+    ctx.fillStyle = b.w % 2 ? "#b8a47c" : "#94825f";
     ctx.fillRect(Math.round(x), GROUND + 10 + (b.w % 3) * 4, b.w, 2);
   }
-  function cloud(x, y, s) {
-    ctx.fillRect(x, y, 52 * s, 8);
-    ctx.fillRect(x + 10 * s, y - 6, 26 * s, 6);
+  function hills(list, off, color) {
+    ctx.fillStyle = color;
+    for (const hill of list) {
+      const x = ((hill.x - off) % HILL_SPAN + HILL_SPAN) % HILL_SPAN - 150;
+      ctx.beginPath();
+      ctx.ellipse(x, GROUND + 2, hill.w / 2, hill.h, 0, Math.PI, 0);
+      ctx.fill();
+    }
   }
+}
+
+function drawNightSky(n) {
+  if (n < 0.02) return;
+  ctx.globalAlpha = n;
+  ctx.fillStyle = "#e8e8f0";
+  for (const s of stars) ctx.fillRect(s.x, s.y, s.r, s.r);
+  // луна-серп
+  ctx.beginPath(); ctx.arc(W - 130, 60, 22, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = mix(SKY_DAY_TOP, SKY_NIGHT_TOP, n);
+  ctx.beginPath(); ctx.arc(W - 122, 54, 20, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
 }
 
 /* ---------- счёт ---------- */
@@ -512,7 +606,7 @@ function frame(dtMs, ts) {
   const target = G.isNight ? 1 : 0;
   G.nightAmount += (target - G.nightAmount) * Math.min(1, dtMs / 900);
 
-  const bg = mix(DAY_BG, NIGHT_BG, G.nightAmount);
+  const bg = mix(SKY_DAY_BOT, SKY_NIGHT_BOT, G.nightAmount);
   const fg = mix(DAY_FG, NIGHT_FG, G.nightAmount);
   document.documentElement.style.setProperty("--bg", bg);
   document.documentElement.style.setProperty("--fg", fg);
@@ -535,20 +629,24 @@ function frame(dtMs, ts) {
     G.shake -= dt;
     ctx.translate((Math.random() - 0.5) * 6, (Math.random() - 0.5) * 6);
   }
-  ctx.fillStyle = bg;
-  ctx.fillRect(-10, -10, W + 20, H + 20);
-  drawBackground(dt, fg, bg);
+  drawSky(G.nightAmount);
+  drawScenery(dt);
   if (G.state === "run") {
-    updateObstacles(dt, fg, bg);
+    updateObstacles(dt);
     if (collides()) gameOver();
   } else {
     // статичная отрисовка препятствий (после смерти)
-    for (const o of obstacles) {
-      if (o.kind === "cactus") drawCactus(o, fg);
-      else drawSprite(PTERO[o.frame], o.x, o.y - 8 * PX, fg, bg);
-    }
+    for (const o of obstacles) drawObstacle(o);
   }
-  dino.draw(fg, bg);
+  dino.draw();
+  // ночь затемняет всю сцену
+  if (G.nightAmount > 0.01) {
+    ctx.globalCompositeOperation = "multiply";
+    ctx.fillStyle = mix([255, 255, 255], [118, 124, 168], G.nightAmount);
+    ctx.fillRect(-10, -10, W + 20, H + 20);
+    ctx.globalCompositeOperation = "source-over";
+  }
+  drawNightSky(G.nightAmount);
   drawScore(fg);
   if (G.state === "idle") {
     ctx.fillStyle = fg;
@@ -660,6 +758,7 @@ if (location.hash.includes("demo")) {
   startRun();
   G.score = 320; // чтобы появлялись птеродактили
   if (location.hash.includes("night")) { G.isNight = true; G.nightAmount = 1; }
+  if (location.hash.includes("duck")) dino.ducking = true;
   const ff = /ff(\d+)/.exec(location.hash);
   if (ff) for (let i = 0; i < +ff[1]; i++) frame(16.7, i * 16.7);
 }
