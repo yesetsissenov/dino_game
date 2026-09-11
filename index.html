@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Dino Runner</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦖</text></svg>">
+<style>
+  :root {
+    --bg: #f7f7f7;
+    --fg: #535353;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    transition: background .8s;
+    font-family: "Courier New", Courier, monospace;
+    overflow: hidden;
+    touch-action: manipulation;
+    -webkit-user-select: none; user-select: none;
+  }
+  #wrap {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 10px;
+  }
+  #stage {
+    position: relative;
+    width: 100%;
+    max-width: 900px;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    image-rendering: pixelated;
+    cursor: pointer;
+  }
+  #hint {
+    color: var(--fg);
+    opacity: .55;
+    font-size: 13px;
+    letter-spacing: 1px;
+    text-align: center;
+    transition: color .8s;
+  }
+  /* ---------- overlays ---------- */
+  .panel {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--fg);
+    transition: color .8s;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .25s, color .8s;
+  }
+  .panel.show { opacity: 1; pointer-events: auto; }
+  .panel h1 {
+    font-size: clamp(20px, 4.5vw, 34px);
+    letter-spacing: 6px;
+    font-weight: bold;
+  }
+  .panel .sub { font-size: 14px; letter-spacing: 2px; opacity: .8; }
+  .panel button {
+    margin-top: 6px;
+    font-family: inherit;
+    font-size: 15px;
+    letter-spacing: 2px;
+    padding: 10px 26px;
+    background: transparent;
+    color: inherit;
+    border: 2px solid currentColor;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .panel button:hover { background: rgba(128,128,128,.15); }
+  #btnMute {
+    position: absolute;
+    top: 8px; left: 8px;
+    width: 34px; height: 34px;
+    font-size: 17px;
+    line-height: 1;
+    background: transparent;
+    border: none;
+    color: var(--fg);
+    opacity: .45;
+    cursor: pointer;
+    transition: color .8s;
+    z-index: 5;
+  }
+  #btnMute:hover { opacity: .9; }
+  .newRecord {
+    font-size: 13px;
+    letter-spacing: 3px;
+    animation: blink 1s steps(2) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <canvas id="game"></canvas>
+    <button id="btnMute" title="Звук (M)">🔊</button>
+    <div class="panel" id="panelOver">
+      <h1>G A M E&nbsp;&nbsp;O V E R</h1>
+      <div class="sub" id="overScore"></div>
+      <div class="newRecord" id="overRecord" style="display:none">★ НОВЫЙ РЕКОРД ★</div>
+      <button id="btnRestart">ЕЩЁ РАЗ</button>
+    </div>
+    <div class="panel" id="panelPause">
+      <h1>ПАУЗА</h1>
+      <div class="sub">P — продолжить</div>
+    </div>
+  </div>
+  <div id="hint">SPACE / ↑ / тап — прыжок&nbsp;&nbsp;·&nbsp;&nbsp;↓ — присесть&nbsp;&nbsp;·&nbsp;&nbsp;P — пауза</div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   Dino Runner — HTML5 версия.
+   Один файл, без зависимостей. Хранение рекорда абстрагировано
+   (storage.*) — для YouTube Playables достаточно заменить его
+   на ytgame.game.saveData/loadData и добавить их SDK-скрипт.
+   ============================================================ */
+
+const W = 900, H = 300, GROUND = 252;
+const cv = document.getElementById("game");
+const ctx = cv.getContext("2d");
+
+/* ---------- responsive canvas ---------- */
+function fit() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = W * dpr;
+  cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cv.style.height = "auto";
+  ctx.imageSmoothingEnabled = false;
+}
+fit();
+addEventListener("resize", fit);
+
+/* ---------- storage (замените на ytgame SDK для Playables) ---------- */
+const storage = {
+  load() { try { return +localStorage.getItem("dino_hi") || 0; } catch { return 0; } },
+  save(v) { try { localStorage.setItem("dino_hi", v); } catch {} },
+  loadMute() { try { return localStorage.getItem("dino_mute") === "1"; } catch { return false; } },
+  saveMute(v) { try { localStorage.setItem("dino_mute", v ? "1" : "0"); } catch {} },
+};
+
+/* ---------- audio (WebAudio, без файлов) ---------- */
+const sound = {
+  ctx: null,
+  muted: storage.loadMute(),
+  ensure() {
+    if (!this.ctx) { try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch {} }
+    if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
+  },
+  beep(freq, dur, type = "square", vol = 0.06, slideTo = null) {
+    if (this.muted || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    if (slideTo) o.frequency.linearRampToValueAtTime(slideTo, t + dur);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g).connect(this.ctx.destination);
+    o.start(t); o.stop(t + dur);
+  },
+  jump() { this.beep(460, 0.1, "square", 0.05, 660); },
+  milestone() { this.beep(660, 0.08); setTimeout(() => this.beep(880, 0.1), 90); },
+  hit() { this.beep(160, 0.28, "sawtooth", 0.08, 60); },
+};
+
+/* ---------- пиксель-арт спрайты ---------- */
+/* 'X' — тело, 'o' — глаз (цвет фона) */
+const DINO_BODY = [
+  ".............XXXXXXX",
+  ".............XoXXXXX",
+  ".............XXXXXXX",
+  ".............XXXXXXX",
+  ".............XXXX...",
+  ".............XXXXX..",
+  "............XXXX....",
+  "...........XXXX....." ,
+  "X.........XXXXX.....",
+  "XX........XXXXXX....",
+  "XXX......XXXXXXX....",
+  "XXXX....XXXXXXXXXX..",
+  ".XXXXXXXXXXXXXXX....",
+  "..XXXXXXXXXXXXXX....",
+  "...XXXXXXXXXXXXX....",
+  "....XXXXXXXXXXX.....",
+  ".....XXXXXXXXXX.....",
+  "......XXXXXXXX......",
+];
+const LEGS_RUN_A = [
+  ".......XX...XX......",
+  ".......XX...........",
+  ".......XXX..........",
+];
+const LEGS_RUN_B = [
+  ".......XX...XX......",
+  "............XX......",
+  "............XXX.....",
+];
+const LEGS_STAND = [
+  ".......XX...XX......",
+  ".......XX...XX......",
+  ".......XXX..XXX.....",
+];
+const DINO_DUCK = [
+  [
+    "...................XXXXXXX",
+    "XX.................XoXXXXX",
+    "XXX......XXXXXXXXXXXXXXXXX",
+    ".XXXXXXXXXXXXXXXXXXXXXX...",
+    "..XXXXXXXXXXXXXXXXXXX.....",
+    "....XXXXXXXXXXXXXXX.......",
+    "......XX....XX............",
+    "......XXX...................",
+  ],
+  [
+    "...................XXXXXXX",
+    "XX.................XoXXXXX",
+    "XXX......XXXXXXXXXXXXXXXXX",
+    ".XXXXXXXXXXXXXXXXXXXXXX...",
+    "..XXXXXXXXXXXXXXXXXXX.....",
+    "....XXXXXXXXXXXXXXX.......",
+    "......XX....XX............",
+    ".............XXX..........",
+  ],
+];
+const PTERO = [
+  [
+    "......X.........",
+    "......XX........",
+    "......XXX.......",
+    "XXXXXXXXXXXXX...",
+    "...XXXXXXXXXXXXX",
+    "....XXXXXXXX....",
+    "................",
+    "................",
+  ],
+  [
+    "................",
+    "................",
+    "................",
+    "XXXXXXXXXXXXX...",
+    "...XXXXXXXXXXXXX",
+    "....XXXXXXXX....",
+    "......XXX.......",
+    "......XX........",
+  ],
+];
+
+const PX = 2.4; // масштаб пикселя спрайта
+function drawSprite(map, x, y, fg, bg, scale = PX) {
+  for (let r = 0; r < map.length; r++) {
+    const row = map[r];
+    for (let c = 0; c < row.length; c++) {
+      const ch = row[c];
+      if (ch === ".") continue;
+      ctx.fillStyle = ch === "o" ? bg : fg;
+      ctx.fillRect(Math.round(x + c * scale), Math.round(y + r * scale), Math.ceil(scale), Math.ceil(scale));
+    }
+  }
+}
+
+/* ---------- состояние игры ---------- */
+const G = {
+  state: "idle", // idle | run | over | pause
+  score: 0,
+  hi: storage.load(),
+  speed: 6,
+  t: 0,             // общее время (мс) текущего забега
+  nightAmount: 0,   // 0 = день, 1 = ночь (плавно)
+  cycleTimer: 0,
+  isNight: false,
+  shake: 0,
+  milestoneFlash: 0,
+  newRecord: false,
+};
+
+const dino = {
+  x: 70, y: GROUND,
+  vy: 0,
+  jumping: false,
+  ducking: false,
+  frame: 0,
+  animT: 0,
+  get w() { return this.ducking ? 26 * PX : 20 * PX; },
+  get h() { return this.ducking ? 8 * PX : 21 * PX; },
+  jump() {
+    if (!this.jumping) {
+      this.vy = -15;
+      this.jumping = true;
+      this.ducking = false;
+      sound.jump();
+    }
+  },
+  cutJump() { // отпустили кнопку раньше — прыжок ниже
+    if (this.jumping && this.vy < -6) this.vy = -6;
+  },
+  update(dt) {
+    if (this.jumping) {
+      this.vy += 0.8 * dt * (this.ducking ? 2.2 : 1); // duck в воздухе = быстрое приземление
+      this.y += this.vy * dt;
+      if (this.y >= GROUND) { this.y = GROUND; this.vy = 0; this.jumping = false; }
+    }
+    this.animT += dt;
+    if (this.animT > 6) { this.animT = 0; this.frame ^= 1; }
+  },
+  hitbox() {
+    // хитбокс чуть меньше спрайта — честнее к игроку
+    if (this.ducking && !this.jumping)
+      return { x: this.x + 6, y: this.y - this.h + 4, w: this.w - 14, h: this.h - 6 };
+    return { x: this.x + 8, y: this.y - this.h + 6, w: this.w - 18, h: this.h - 10 };
+  },
+  draw(fg, bg) {
+    const x = this.x, hb = this.h;
+    if (this.ducking && !this.jumping) {
+      drawSprite(DINO_DUCK[this.frame], x, this.y - 8 * PX, fg, bg);
+      return;
+    }
+    const legs = this.jumping ? LEGS_STAND
+      : (G.state === "run" ? (this.frame ? LEGS_RUN_A : LEGS_RUN_B) : LEGS_STAND);
+    drawSprite(DINO_BODY, x, this.y - 21 * PX, fg, bg);
+    drawSprite(legs, x, this.y - 3 * PX, fg, bg);
+  },
+};
+
+/* ---------- препятствия ---------- */
+const obstacles = [];
+let nextGap = 400;
+
+function spawnObstacle() {
+  const roll = Math.random();
+  if (roll < 0.22 && G.score > 150) {
+    // птеродактиль: три высоты — перепрыгнуть, присесть, пробежать
+    const levels = [GROUND - 4, GROUND - 46, GROUND - 92];
+    const y = levels[Math.floor(Math.random() * levels.length)];
+    obstacles.push({ kind: "ptero", x: W + 40, y, w: 16 * PX, h: 8 * PX, frame: 0, animT: 0 });
+  } else {
+    // кактусы: группа из 1–3
+    const sizes = [
+      { w: 14, h: 30 }, { w: 20, h: 42 }, { w: 24, h: 52 },
+    ];
+    const s = sizes[Math.floor(Math.random() * sizes.length)];
+    const count = s.h < 45 ? 1 + Math.floor(Math.random() * 3) : 1 + Math.floor(Math.random() * 2);
+    let ox = W + 20;
+    for (let i = 0; i < count; i++) {
+      obstacles.push({ kind: "cactus", x: ox, y: GROUND, w: s.w, h: s.h + (Math.random() * 8 | 0) });
+      ox += s.w + 4;
+    }
+  }
+}
+
+function drawCactus(o, fg) {
+  const x = Math.round(o.x), top = Math.round(o.y - o.h);
+  const w = o.w, h = o.h;
+  const stem = Math.max(8, w * 0.44);
+  const sx = x + (w - stem) / 2;
+  ctx.fillStyle = fg;
+  r(sx, top, stem, h);
+  // руки
+  const armW = Math.max(5, w * 0.28), armH = h * 0.32;
+  r(sx - armW, top + h * 0.28, armW, 4);
+  r(sx - armW, top + h * 0.28 - armH * 0.6, 4, armH * 0.6 + 4);
+  r(sx + stem, top + h * 0.18, armW, 4);
+  r(sx + stem + armW - 4, top + h * 0.18 - armH * 0.5, 4, armH * 0.5 + 4);
+  function r(a, b, c, d) { ctx.fillRect(Math.round(a), Math.round(b), Math.round(c), Math.round(d)); }
+}
+
+function updateObstacles(dt, fg, bg) {
+  nextGap -= G.speed * dt;
+  if (nextGap <= 0) {
+    spawnObstacle();
+    // дистанция растёт вместе со скоростью, чтобы всегда было проходимо
+    const base = 260 + G.speed * 18;
+    nextGap = base + Math.random() * 260;
+  }
+  for (const o of obstacles) {
+    o.x -= G.speed * dt;
+    if (o.kind === "ptero") {
+      o.animT += dt;
+      if (o.animT > 8) { o.animT = 0; o.frame ^= 1; }
+      o.x -= 0.8 * dt; // птицы чуть быстрее ленты
+    }
+  }
+  while (obstacles.length && obstacles[0].x + obstacles[0].w * 2 < 0) obstacles.shift();
+  for (const o of obstacles) {
+    if (o.kind === "cactus") drawCactus(o, fg);
+    else drawSprite(PTERO[o.frame], o.x, o.y - 8 * PX, fg, bg);
+  }
+}
+
+function collides() {
+  const d = dino.hitbox();
+  for (const o of obstacles) {
+    let box;
+    if (o.kind === "cactus") box = { x: o.x + 2, y: o.y - o.h + 2, w: o.w - 4, h: o.h - 2 };
+    else box = { x: o.x + 6, y: o.y - 6 * PX, w: o.w - 12, h: 4 * PX };
+    if (d.x < box.x + box.w && d.x + d.w > box.x && d.y < box.y + box.h && d.y + d.h > box.y) return true;
+  }
+  return false;
+}
+
+/* ---------- фон: земля, облака, звёзды, луна ---------- */
+let groundOffset = 0;
+const bumps = Array.from({ length: 40 }, () => ({ x: Math.random() * W, w: 6 + Math.random() * 20 }));
+const clouds = Array.from({ length: 4 }, (_, i) => ({ x: Math.random() * W, y: 40 + Math.random() * 90, s: 0.55 + Math.random() * 0.5 }));
+const stars = Array.from({ length: 26 }, () => ({ x: Math.random() * W, y: 10 + Math.random() * 140, r: Math.random() < 0.3 ? 2 : 1 }));
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+function mix(c1, c2, t) {
+  return `rgb(${Math.round(lerp(c1[0], c2[0], t))},${Math.round(lerp(c1[1], c2[1], t))},${Math.round(lerp(c1[2], c2[2], t))})`;
+}
+const DAY_BG = [247, 247, 247], NIGHT_BG = [27, 30, 41];
+const DAY_FG = [83, 83, 83], NIGHT_FG = [235, 235, 240];
+
+function drawBackground(dt, fg, bg) {
+  const n = G.nightAmount;
+  // звёзды и луна
+  if (n > 0.02) {
+    ctx.globalAlpha = n;
+    ctx.fillStyle = "#e8e8f0";
+    for (const s of stars) ctx.fillRect(s.x, s.y, s.r, s.r);
+    // луна-серп
+    ctx.beginPath(); ctx.arc(W - 130, 60, 22, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = mix(DAY_BG, NIGHT_BG, n);
+    ctx.beginPath(); ctx.arc(W - 122, 54, 20, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  // облака
+  ctx.fillStyle = fg;
+  ctx.globalAlpha = 0.28;
+  for (const c of clouds) {
+    if (G.state === "run") c.x -= G.speed * 0.25 * c.s * dt;
+    if (c.x < -80) { c.x = W + 60; c.y = 40 + Math.random() * 90; }
+    cloud(c.x, c.y, c.s);
+  }
+  ctx.globalAlpha = 1;
+  // земля
+  ctx.strokeStyle = fg;
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, GROUND + 2); ctx.lineTo(W, GROUND + 2); ctx.stroke();
+  if (G.state === "run") groundOffset = (groundOffset + G.speed * dt) % W;
+  ctx.fillStyle = fg;
+  for (const b of bumps) {
+    let x = b.x - groundOffset;
+    if (x < -30) x += W;
+    ctx.fillRect(Math.round(x), GROUND + 10 + (b.w % 3) * 4, b.w, 2);
+  }
+  function cloud(x, y, s) {
+    ctx.fillRect(x, y, 52 * s, 8);
+    ctx.fillRect(x + 10 * s, y - 6, 26 * s, 6);
+  }
+}
+
+/* ---------- счёт ---------- */
+function drawScore(fg) {
+  ctx.fillStyle = fg;
+  ctx.font = "bold 18px 'Courier New', monospace";
+  ctx.textAlign = "right";
+  const s = String(Math.floor(G.score)).padStart(5, "0");
+  const hi = String(Math.floor(G.hi)).padStart(5, "0");
+  if (G.milestoneFlash > 0) {
+    G.milestoneFlash--;
+    if ((G.milestoneFlash / 6 | 0) % 2 === 0) ctx.fillText(s, W - 20, 32);
+  } else {
+    ctx.fillText(s, W - 20, 32);
+  }
+  ctx.globalAlpha = 0.6;
+  ctx.fillText("HI " + hi, W - 120, 32);
+  ctx.globalAlpha = 1;
+}
+
+/* ---------- главный цикл ---------- */
+let lastTime = 0;
+let nowTs = 0;
+function loop(ts) {
+  requestAnimationFrame(loop);
+  if (!lastTime) lastTime = ts;
+  const dtMs = Math.min(ts - lastTime, 50);
+  lastTime = ts;
+  frame(dtMs, ts);
+}
+function frame(dtMs, ts) {
+  nowTs = ts;
+  const dt = dtMs / (1000 / 60); // 1 = один кадр при 60fps
+
+  if (G.state === "pause") return;
+
+  // день/ночь
+  if (G.state === "run") {
+    G.cycleTimer += dtMs;
+    if (G.cycleTimer >= 25000) { G.isNight = !G.isNight; G.cycleTimer = 0; }
+  }
+  const target = G.isNight ? 1 : 0;
+  G.nightAmount += (target - G.nightAmount) * Math.min(1, dtMs / 900);
+
+  const bg = mix(DAY_BG, NIGHT_BG, G.nightAmount);
+  const fg = mix(DAY_FG, NIGHT_FG, G.nightAmount);
+  document.documentElement.style.setProperty("--bg", bg);
+  document.documentElement.style.setProperty("--fg", fg);
+
+  // логика
+  if (G.state === "run") {
+    const prevScore = G.score;
+    G.score += 0.15 * dt;
+    G.speed = Math.min(13, G.speed + 0.0006 * dtMs);
+    if (Math.floor(G.score / 100) > Math.floor(prevScore / 100)) {
+      G.milestoneFlash = 40;
+      sound.milestone();
+    }
+    dino.update(dt);
+  }
+
+  // отрисовка
+  ctx.save();
+  if (G.shake > 0) {
+    G.shake -= dt;
+    ctx.translate((Math.random() - 0.5) * 6, (Math.random() - 0.5) * 6);
+  }
+  ctx.fillStyle = bg;
+  ctx.fillRect(-10, -10, W + 20, H + 20);
+  drawBackground(dt, fg, bg);
+  if (G.state === "run") {
+    updateObstacles(dt, fg, bg);
+    if (collides()) gameOver();
+  } else {
+    // статичная отрисовка препятствий (после смерти)
+    for (const o of obstacles) {
+      if (o.kind === "cactus") drawCactus(o, fg);
+      else drawSprite(PTERO[o.frame], o.x, o.y - 8 * PX, fg, bg);
+    }
+  }
+  dino.draw(fg, bg);
+  drawScore(fg);
+  if (G.state === "idle") {
+    ctx.fillStyle = fg;
+    ctx.font = "bold 20px 'Courier New', monospace";
+    ctx.textAlign = "center";
+    ctx.globalAlpha = 0.5 + 0.5 * Math.sin(ts / 350);
+    ctx.fillText("НАЖМИ, ЧТОБЫ НАЧАТЬ", W / 2, H / 2 - 20);
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+requestAnimationFrame(loop);
+
+/* ---------- состояния ---------- */
+function startRun() {
+  G.state = "run";
+  G.score = 0;
+  G.speed = 6;
+  G.cycleTimer = 0;
+  G.isNight = false;
+  G.newRecord = false;
+  obstacles.length = 0;
+  nextGap = 500;
+  dino.y = GROUND; dino.vy = 0; dino.jumping = false; dino.ducking = false;
+  panelOver.classList.remove("show");
+}
+
+function gameOver() {
+  G.state = "over";
+  G.shake = 10;
+  sound.hit();
+  if (G.score > G.hi) {
+    G.hi = G.score;
+    G.newRecord = true;
+    storage.save(Math.floor(G.hi));
+  }
+  overScore.textContent = `СЧЁТ ${Math.floor(G.score)}  ·  РЕКОРД ${Math.floor(G.hi)}`;
+  overRecord.style.display = G.newRecord ? "" : "none";
+  setTimeout(() => panelOver.classList.add("show"), 350);
+}
+
+function togglePause() {
+  if (G.state === "run") {
+    G.state = "pause";
+    panelPause.classList.add("show");
+  } else if (G.state === "pause") {
+    G.state = "run";
+    lastTime = 0;
+    panelPause.classList.remove("show");
+  }
+}
+
+/* ---------- ввод ---------- */
+const panelOver = document.getElementById("panelOver");
+const panelPause = document.getElementById("panelPause");
+const overScore = document.getElementById("overScore");
+const overRecord = document.getElementById("overRecord");
+const btnMute = document.getElementById("btnMute");
+btnMute.textContent = sound.muted ? "🔇" : "🔊";
+
+function pressJump() {
+  sound.ensure();
+  if (G.state === "idle") { startRun(); dino.jump(); }
+  else if (G.state === "run") dino.jump();
+  else if (G.state === "over" && panelOver.classList.contains("show")) startRun();
+}
+
+addEventListener("keydown", (e) => {
+  if (e.repeat) return;
+  if (["Space", "ArrowUp", "KeyW"].includes(e.code)) { e.preventDefault(); pressJump(); }
+  else if (["ArrowDown", "KeyS"].includes(e.code)) { e.preventDefault(); if (G.state === "run") dino.ducking = true; }
+  else if (e.code === "KeyP") togglePause();
+  else if (e.code === "KeyM") toggleMute();
+});
+addEventListener("keyup", (e) => {
+  if (["Space", "ArrowUp", "KeyW"].includes(e.code)) dino.cutJump();
+  else if (["ArrowDown", "KeyS"].includes(e.code)) dino.ducking = false;
+});
+
+/* тач/мышь: тап по верхним 2/3 — прыжок, по нижней трети — присесть */
+let duckPointer = null;
+cv.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  sound.ensure();
+  const rect = cv.getBoundingClientRect();
+  const yFrac = (e.clientY - rect.top) / rect.height;
+  if (G.state === "run" && yFrac > 0.72 && e.pointerType !== "mouse") {
+    dino.ducking = true;
+    duckPointer = e.pointerId;
+  } else {
+    pressJump();
+  }
+});
+addEventListener("pointerup", (e) => {
+  if (e.pointerId === duckPointer) { dino.ducking = false; duckPointer = null; }
+  else dino.cutJump();
+});
+
+document.getElementById("btnRestart").addEventListener("click", (e) => { e.stopPropagation(); startRun(); });
+function toggleMute() {
+  sound.muted = !sound.muted;
+  storage.saveMute(sound.muted);
+  btnMute.textContent = sound.muted ? "🔇" : "🔊";
+}
+btnMute.addEventListener("click", (e) => { e.stopPropagation(); toggleMute(); });
+
+/* debug: #demo — автостарт, #night — сразу ночь, #ff600 — промотать N кадров */
+if (location.hash.includes("demo")) {
+  startRun();
+  G.score = 320; // чтобы появлялись птеродактили
+  if (location.hash.includes("night")) { G.isNight = true; G.nightAmount = 1; }
+  const ff = /ff(\d+)/.exec(location.hash);
+  if (ff) for (let i = 0; i < +ff[1]; i++) frame(16.7, i * 16.7);
+}
+
+/* автопауза при сворачивании */
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && G.state === "run") togglePause();
+});
+</script>
+</body>
+</html>
